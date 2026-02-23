@@ -97,24 +97,35 @@ encode_title() {
     echo -e "  Started:  $(date '+%H:%M:%S')"
     echo ""
 
-    local tmplog exit_file
-    tmplog=$(mktemp /tmp/ffmpeg_log.XXXXXX)
-    exit_file=$(mktemp /tmp/ffmpeg_exit.XXXXXX)
+    # Temp files live next to the output so native Windows ffmpeg can find them
+    local tmp_base="${output%.*}"
+    local tmplog="${tmp_base}._log.txt"
+    local exit_file="${tmp_base}._exit.txt"
 
     # Build the input: single file or concat demuxer for multiple parts
     local input_args=()
+    local concat_file=""
     if [[ ${#parts[@]} -eq 1 ]]; then
         input_args=( -i "${parts[0]}" )
     else
-        # Write a concat list to a temp file
-        local concat_file
-        concat_file=$(mktemp /tmp/ffmpeg_concat.XXXXXX.txt)
-        local p
+        concat_file="${tmp_base}._concat.txt"
+        # On Git Bash/Windows, ffmpeg is a native binary and needs Windows-style
+        # paths. cygpath -w converts /c/foo/bar to C:\foo\bar when available.
+        local p ffmpeg_path
         for p in "${parts[@]}"; do
-            # Escape single quotes in paths
-            printf "file '%s'\n" "${p//\'/\'\\\'\'}" >> "$concat_file"
+            if command -v cygpath &>/dev/null; then
+                ffmpeg_path=$(cygpath -w "$p")
+            else
+                ffmpeg_path="$p"
+            fi
+            printf "file '%s'\n" "${ffmpeg_path//\'/\'\\\'\'}" >> "$concat_file"
         done
-        input_args=( -f concat -safe 0 -i "$concat_file" )
+        # Also convert the concat file path itself for ffmpeg
+        local concat_arg="$concat_file"
+        if command -v cygpath &>/dev/null; then
+            concat_arg=$(cygpath -w "$concat_file")
+        fi
+        input_args=( -f concat -safe 0 -i "$concat_arg" )
     fi
 
     {
@@ -131,8 +142,7 @@ encode_title() {
             "$output" \
             2>"$tmplog"
         echo $? > "$exit_file"
-        # Clean up concat list if it was created
-        [[ -n "${concat_file:-}" ]] && rm -f "$concat_file"
+        [[ -n "$concat_file" ]] && rm -f "$concat_file"
     } | {
         local cur_secs=0 pct=0 fps="--" speed="?" bar_width=38
 
